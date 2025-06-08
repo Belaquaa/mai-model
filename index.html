@@ -401,6 +401,9 @@
                         <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
                             Выбрать файл
                         </button>
+                        <button class="upload-btn" onclick="testConnection()" style="margin-left: 10px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+                            Тест подключения
+                        </button>
                     </div>
                 </div>
                 <input type="file" id="fileInput" class="file-input" accept="video/*,image/*">
@@ -563,32 +566,93 @@
                 // Уведомление о загрузке на сервер
                 showProgressNotification('Загружаем файл на сервер...', 'progress');
 
+                console.log('Отправляем запрос на:', `${API_BASE_URL}/upload`);
+                console.log('Размер файла:', file.size, 'байт');
+                console.log('Тип файла:', file.type);
+                console.log('Имя файла:', file.name);
+
                 const response = await fetch(`${API_BASE_URL}/upload`, {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    mode: 'cors',  // Явно указываем CORS режим
+                    credentials: 'same-origin'  // Добавляем credentials
                 });
 
+                console.log('Получен ответ:', response.status, response.statusText);
+                console.log('Заголовки ответа:', [...response.headers.entries()]);
+
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    let errorText;
+                    try {
+                        // Пытаемся получить JSON ошибку
+                        const errorData = await response.json();
+                        errorText = errorData.error || errorData.message || `HTTP ${response.status}`;
+                        console.log('Ошибка от сервера (JSON):', errorData);
+                    } catch (e) {
+                        // Если не JSON, получаем как текст
+                        errorText = await response.text();
+                        console.log('Ошибка от сервера (текст):', errorText);
+                    }
+                    throw new Error(`Сервер вернул ошибку ${response.status}: ${errorText}`);
                 }
 
                 // Уведомление об успешной загрузке
                 showProgressNotification('Файл загружен, выполняем анализ...', 'progress');
 
-                const result = await response.json();
+                let result;
+                try {
+                    result = await response.json();
+                    console.log('Результат анализа:', result);
+                } catch (jsonError) {
+                    console.error('Ошибка парсинга JSON:', jsonError);
+                    const responseText = await response.text();
+                    console.log('Ответ сервера как текст:', responseText);
+                    throw new Error(`Сервер вернул некорректный JSON. Ответ: ${responseText.substring(0, 200)}...`);
+                }
 
                 if (result.success) {
                     showProgressNotification('Анализ завершен успешно!', 'success');
                     showResult(result.processed_file_url, result.is_placeholder);
                 } else {
-                    throw new Error(result.error || 'Ошибка анализа файла');
+                    throw new Error(result.error || 'Неизвестная ошибка анализа файла');
                 }
             } catch (error) {
-                console.error('Error:', error);
+                console.error('Подробная ошибка:', error);
+                console.error('Тип ошибки:', error.name);
+                console.error('Сообщение ошибки:', error.message);
+                console.error('Stack trace:', error.stack);
+
                 processingSection.style.display = 'none';
                 uploadSection.style.display = 'block';
-                showProgressNotification(`Ошибка: ${error.message}`, 'error');
-                showError(`Ошибка обработки: ${error.message}`);
+
+                // Определяем тип ошибки более точно
+                let errorMessage = 'Произошла ошибка при обработке файла';
+
+                // Проверяем конкретные типы ошибок
+                if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                    // Это сетевая ошибка - но если тест подключения работает, то проблема в другом
+                    errorMessage = 'Ошибка сети при загрузке файла. Попробуйте еще раз.';
+                } else if (error.name === 'SyntaxError' && error.message.includes('JSON')) {
+                    // Ошибка парсинга JSON ответа
+                    errorMessage = 'Сервер вернул неверный ответ. Проверьте логи сервера.';
+                } else if (error.message.includes('413')) {
+                    // Файл слишком большой
+                    errorMessage = 'Файл слишком большой. Максимальный размер: 100MB';
+                } else if (error.message.includes('400')) {
+                    // Неподдерживаемый формат файла
+                    errorMessage = 'Неподдерживаемый формат файла';
+                } else if (error.message.includes('500')) {
+                    // Ошибка сервера
+                    errorMessage = 'Внутренняя ошибка сервера. Проверьте логи.';
+                } else {
+                    // Показываем реальную ошибку вместо предположений
+                    errorMessage = `Ошибка: ${error.message}`;
+                }
+
+                console.log('Выбранное сообщение ошибки:', errorMessage);
+
+                showProgressNotification(errorMessage, 'error');
+                showError(errorMessage);
             }
         }
 
@@ -712,6 +776,77 @@
             }
         }
 
+        async function testConnection() {
+            showProgressNotification('Тестируем подключение к серверу...', 'info');
+
+            try {
+                console.log('=== ТЕСТ ПОДКЛЮЧЕНИЯ ===');
+                console.log('Тестируем подключение к:', `${API_BASE_URL}/test-cors`);
+                console.log('Протокол страницы:', window.location.protocol);
+                console.log('User Agent:', navigator.userAgent);
+
+                const response = await fetch(`${API_BASE_URL}/test-cors`, {
+                    method: 'GET',
+                    mode: 'cors',
+                    credentials: 'same-origin'
+                });
+
+                console.log('Ответ тест-запроса:', response.status, response.statusText);
+                console.log('Заголовки ответа:', [...response.headers.entries()]);
+
+                if (response.ok) {
+                    const result = await response.json();
+                    console.log('Результат теста:', result);
+                    showProgressNotification('✅ Подключение к серверу работает отлично!', 'success');
+
+                    // Дополнительно тестируем health endpoint
+                    console.log('Дополнительно тестируем health endpoint...');
+                    const healthResponse = await fetch(`${API_BASE_URL}/health`);
+                    if (healthResponse.ok) {
+                        const healthData = await healthResponse.json();
+                        console.log('Health check успешен:', healthData);
+                        showProgressNotification('✅ Health check также прошел успешно!', 'success');
+                    }
+                } else {
+                    throw new Error(`Сервер вернул ${response.status}: ${response.statusText}`);
+                }
+
+            } catch (error) {
+                console.error('=== ОШИБКА ТЕСТИРОВАНИЯ ===');
+                console.error('Ошибка тестирования:', error);
+                console.error('Тип ошибки:', error.name);
+                console.error('Сообщение:', error.message);
+
+                let errorMessage = 'Ошибка подключения к серверу';
+                let suggestions = [];
+
+                if (error.name === 'TypeError' && error.message.includes('Failed to fetch')) {
+                    errorMessage = 'Не удается подключиться к серверу';
+                    suggestions = [
+                        '1. Убедитесь, что сервер запущен: python app.py',
+                        '2. Проверьте, что сервер доступен на http://localhost:5000',
+                        '3. Попробуйте открыть http://localhost:5000/health в браузере'
+                    ];
+                } else if (window.location.protocol === 'file:') {
+                    errorMessage = 'Проблема с file:// протоколом';
+                    suggestions = [
+                        '1. Откройте страницу через HTTP сервер',
+                        '2. Используйте: python -m http.server 8000',
+                        '3. Затем откройте http://localhost:8000'
+                    ];
+                } else {
+                    errorMessage = `Ошибка: ${error.message}`;
+                }
+
+                showProgressNotification(`❌ ${errorMessage}`, 'error');
+
+                if (suggestions.length > 0) {
+                    console.log('Рекомендации для решения проблемы:');
+                    suggestions.forEach(suggestion => console.log(suggestion));
+                }
+            }
+        }
+
         function showError(message) {
             errorMessage.textContent = message;
             errorMessage.style.display = 'block';
@@ -738,6 +873,32 @@
             selectedFile = null;
             fileInput.value = '';
         }
+        window.addEventListener('load', function() {
+            console.log('=== ДИАГНОСТИКА ЗАПУСКА ===');
+            console.log('API URL:', API_BASE_URL);
+            console.log('Протокол страницы:', window.location.protocol);
+            console.log('Адрес страницы:', window.location.href);
+            console.log('User Agent:', navigator.userAgent);
+            console.log('Время загрузки:', new Date().toISOString());
+
+            // Показываем информацию о протоколе загрузки
+            if (window.location.protocol === 'file:') {
+                showProgressNotification('⚠️ Страница открыта через file://. Для лучшей работы используйте HTTP сервер', 'info');
+                console.warn('РЕКОМЕНДАЦИЯ: запустите локальный HTTP сервер для избежания CORS проблем');
+                console.log('Команда: python -m http.server 8000');
+                console.log('Затем откройте: http://localhost:8000');
+            } else {
+                console.log('✅ Страница загружена через HTTP протокол - отлично!');
+                showProgressNotification('✅ Страница загружена через HTTP - все готово к работе!', 'success');
+            }
+
+            console.log('=== ДЛЯ ДИАГНОСТИКИ ПРОБЛЕМ ===');
+            console.log('1. Нажмите кнопку "Тест подключения"');
+            console.log('2. Если есть ошибки, посмотрите эту консоль (F12)');
+            console.log('3. Убедитесь что Flask сервер запущен: python app.py');
+            console.log('4. Проверьте http://localhost:5000/health в браузере');
+            console.log('============================');
+        });
     </script>
 </body>
 </html>
